@@ -1,0 +1,55 @@
+name: Trigger Office Email Sorting Tool
+
+# Runs the "Office Email Sorting Tool" Zia Agent, which tags new emails in
+# office@yourfriendinparis.com (Client Response, Client FYI, Legal and Admin,
+# Partners and Agencies, Notification). It only adds tags and flags.
+#
+# Needs three repository secrets (Settings > Secrets and variables > Actions):
+#   ZOHO_OFFICE_CLIENT_ID      - Self Client ID from api-console.zoho.eu (office@ account)
+#   ZOHO_OFFICE_CLIENT_SECRET  - Self Client secret from the same place
+#   ZOHO_OFFICE_REFRESH_TOKEN  - refresh token with scope ZiaAgents.agents.TRIGGER,
+#                                generated with that Self Client while signed in as office@
+
+on:
+  schedule:
+    # Every 30 minutes (GitHub may run a few minutes late; that's normal)
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {} # "Run workflow" button in the Actions tab, for testing
+
+jobs:
+  trigger-office-sorter:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get fresh Zoho access token
+        id: get_token
+        run: |
+          RESPONSE=$(curl -s -X POST "https://accounts.zoho.eu/oauth/v2/token" \
+            -d "refresh_token=${{ secrets.ZOHO_OFFICE_REFRESH_TOKEN }}" \
+            -d "client_id=${{ secrets.ZOHO_OFFICE_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.ZOHO_OFFICE_CLIENT_SECRET }}" \
+            -d "grant_type=refresh_token")
+          ACCESS_TOKEN=$(echo "$RESPONSE" | grep -o '"access_token":"[^"]*' | cut -d'"' -f4)
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "Failed to obtain access token. Response (token values hidden):"
+            echo "$RESPONSE" | sed 's/"[a-z_]*token":"[^"]*"/"token":"***"/g'
+            exit 1
+          fi
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger the agent
+        run: |
+          HTTP_CODE=$(curl -s -o response.json -w "%{http_code}" -X POST \
+            "https://ziaagents.zoho.eu/ziaagents/api/v1/agents/7351000000002108/trigger" \
+            -H "X-ZIAAGENTS-ORG: 20121216519" \
+            -H "Authorization: Zoho-oauthtoken ${{ steps.get_token.outputs.access_token }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+                  "query": "Run your sorting process now.",
+                  "reasoning": false,
+                  "attachments": [],
+                  "systemArgs": {}
+                }')
+          echo "HTTP status: $HTTP_CODE"
+          head -c 2000 response.json; echo
+          if [ "$HTTP_CODE" -ge 400 ]; then exit 1; fi
